@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 from deepface import DeepFace
 import cv2
+cv2.setNumThreads(0)  # Prevent multi-threading issues
 import tempfile
 import os
 import re

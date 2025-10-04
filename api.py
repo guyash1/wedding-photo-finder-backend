@@ -28,15 +28,17 @@ face_database = None
 R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
 R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
 R2_ACCOUNT_ID = os.environ.get('R2_ACCOUNT_ID')
+R2_ENDPOINT = os.environ.get('R2_ENDPOINT')  # Optional: full endpoint URL like https://xxxxx.r2.cloudflarestorage.com
 R2_BUCKET_NAME = os.environ.get('R2_BUCKET_NAME', 'wedding-photos-amit-guy')
 
 # Initialize R2 client if credentials are available
 r2_client = None
-if R2_ACCESS_KEY and R2_SECRET_KEY and R2_ACCOUNT_ID:
+if R2_ACCESS_KEY and R2_SECRET_KEY and (R2_ENDPOINT or R2_ACCOUNT_ID):
     try:
+        endpoint_url = R2_ENDPOINT or f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com'
         r2_client = boto3.client(
             's3',
-            endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+            endpoint_url=endpoint_url,
             aws_access_key_id=R2_ACCESS_KEY,
             aws_secret_access_key=R2_SECRET_KEY,
             region_name='auto'
@@ -46,19 +48,32 @@ if R2_ACCESS_KEY and R2_SECRET_KEY and R2_ACCOUNT_ID:
         print(f"❌ Failed to initialize R2 client: {e}")
         r2_client = None
 else:
-    print("⚠️ R2 credentials not found, using local storage")
+    print("⚠️ R2 credentials/endpoint not found, using local storage")
 
 def load_database():
-    """Load the face embeddings database"""
+    """Load the face embeddings database from local disk or R2"""
     global face_database
-    
+
+    if not EMBEDDINGS_FILE.exists() and r2_client:
+        # Try to download from R2 once
+        try:
+            print("Embeddings file not found locally. Trying to download from R2...")
+            obj = r2_client.get_object(Bucket=R2_BUCKET_NAME, Key='processed_data/face_embeddings.pkl')
+            data = obj['Body'].read()
+            EMBEDDINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(EMBEDDINGS_FILE, 'wb') as f:
+                f.write(data)
+            print("Downloaded embeddings from R2.")
+        except Exception as e:
+            print(f"Failed to fetch embeddings from R2: {e}")
+
     if not EMBEDDINGS_FILE.exists():
         print(f"ERROR: Embeddings file not found at {EMBEDDINGS_FILE}")
         return False
-    
+
     with open(EMBEDDINGS_FILE, 'rb') as f:
         face_database = pickle.load(f)
-    
+
     print(f"Loaded {len(face_database)} face embeddings from database")
     return True
 
@@ -284,28 +299,37 @@ def serve_image(image_path):
 
 @app.route('/download/<path:image_path>')
 def download_image(image_path):
-    """Download image files from the photos directory"""
+    """Download image file from R2 or local storage"""
     try:
         # Convert Windows path separators to forward slashes
         image_path = image_path.replace('\\', '/')
-        
-        # Build full path
+
+        if r2_client:
+            try:
+                obj = r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=image_path)
+                from flask import Response
+                return Response(
+                    obj['Body'].read(),
+                    mimetype='application/octet-stream',
+                    headers={
+                        'Content-Disposition': f'attachment; filename="{os.path.basename(image_path)}"'
+                    }
+                )
+            except ClientError as e:
+                if e.response['Error']['Code'] != 'NoSuchKey':
+                    return jsonify({'error': f'R2 error: {str(e)}'}), 500
+                # else fall back to local
+
+        # Fallback to local storage
         full_path = PHOTOS_BASE_DIR / image_path
-        
-        # Security check - ensure path is within photos directory
         if not str(full_path.resolve()).startswith(str(PHOTOS_BASE_DIR.resolve())):
             return jsonify({'error': 'Access denied'}), 403
-        
-        # Check if file exists
         if not full_path.exists():
             return jsonify({'error': 'Image not found'}), 404
-        
-        # Get directory and filename
         directory = full_path.parent
         filename = full_path.name
-        
         return send_from_directory(directory, filename, as_attachment=True)
-        
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -326,24 +350,28 @@ def download_all_images():
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
             for image_path in image_paths:
                 try:
-                    # Convert Windows path separators to forward slashes
                     clean_path = image_path.replace('\\', '/')
-                    
-                    # Build full path
+
+                    if r2_client:
+                        try:
+                            obj = r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=clean_path)
+                            data = obj['Body'].read()
+                            # Use arcname as filename only
+                            arcname = os.path.basename(clean_path)
+                            zip_file.writestr(arcname, data)
+                            continue
+                        except ClientError as e:
+                            if e.response['Error']['Code'] != 'NoSuchKey':
+                                print(f"R2 error for {clean_path}: {e}")
+                            # fall back to local
+
                     full_path = PHOTOS_BASE_DIR / clean_path
-                    
-                    # Security check
                     if not str(full_path.resolve()).startswith(str(PHOTOS_BASE_DIR.resolve())):
                         continue
-                    
-                    # Check if file exists
                     if not full_path.exists():
                         continue
-                    
-                    # Add file to ZIP
-                    filename = full_path.name
-                    zip_file.write(full_path, filename)
-                    
+                    zip_file.write(full_path, os.path.basename(clean_path))
+
                 except Exception as e:
                     print(f"Error adding {image_path} to ZIP: {e}")
                     continue

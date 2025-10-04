@@ -18,11 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application files
 COPY . .
 
-# Railway provides PORT automatically, default to 8000 for local testing
-ENV PORT=8000
+EXPOSE 8000
 
-EXPOSE ${PORT}
-
-# Use shell form to allow environment variable substitution
-CMD gunicorn api:app --bind 0.0.0.0:${PORT} --timeout 120 --workers 1
+# Simple fixed port - Railway will handle routing
+CMD ["gunicorn", "api:app", "--bind", "0.0.0.0:8000", "--timeout", "120", "--workers", "1"]
 

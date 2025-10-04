@@ -13,6 +13,8 @@ import os
 import re
 import zipfile
 import io
+import boto3
+from botocore.exceptions import ClientError
 
 app = Flask(__name__)
 CORS(app, origins=['*'])
@@ -21,6 +23,30 @@ CORS(app, origins=['*'])
 EMBEDDINGS_FILE = Path("../processed_data/face_embeddings.pkl")
 PHOTOS_BASE_DIR = Path("../photos").resolve()
 face_database = None
+
+# R2 Configuration
+R2_ACCESS_KEY = os.environ.get('R2_ACCESS_KEY')
+R2_SECRET_KEY = os.environ.get('R2_SECRET_KEY')
+R2_ACCOUNT_ID = os.environ.get('R2_ACCOUNT_ID')
+R2_BUCKET_NAME = os.environ.get('R2_BUCKET_NAME', 'wedding-photos-amit-guy')
+
+# Initialize R2 client if credentials are available
+r2_client = None
+if R2_ACCESS_KEY and R2_SECRET_KEY and R2_ACCOUNT_ID:
+    try:
+        r2_client = boto3.client(
+            's3',
+            endpoint_url=f'https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com',
+            aws_access_key_id=R2_ACCESS_KEY,
+            aws_secret_access_key=R2_SECRET_KEY,
+            region_name='auto'
+        )
+        print("✅ R2 client initialized successfully")
+    except Exception as e:
+        print(f"❌ Failed to initialize R2 client: {e}")
+        r2_client = None
+else:
+    print("⚠️ R2 credentials not found, using local storage")
 
 def load_database():
     """Load the face embeddings database"""
@@ -208,27 +234,50 @@ def stats():
 
 @app.route('/images/<path:image_path>')
 def serve_image(image_path):
-    """Serve image files from the photos directory"""
+    """Serve image files from R2 or local storage"""
     try:
         # Convert Windows path separators to forward slashes
         image_path = image_path.replace('\\', '/')
         
-        # Build full path
-        full_path = PHOTOS_BASE_DIR / image_path
+        # If R2 client is available, serve from R2
+        if r2_client:
+            try:
+                # Get image from R2
+                response = r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=image_path)
+                
+                # Return image data
+                from flask import Response
+                return Response(
+                    response['Body'].read(),
+                    mimetype='image/jpeg',
+                    headers={
+                        'Content-Disposition': f'inline; filename="{os.path.basename(image_path)}"'
+                    }
+                )
+            except ClientError as e:
+                if e.response['Error']['Code'] == 'NoSuchKey':
+                    return jsonify({'error': 'Image not found in R2'}), 404
+                else:
+                    return jsonify({'error': f'R2 error: {str(e)}'}), 500
         
-        # Security check - ensure path is within photos directory
-        if not str(full_path.resolve()).startswith(str(PHOTOS_BASE_DIR.resolve())):
-            return jsonify({'error': 'Access denied'}), 403
-        
-        # Check if file exists
-        if not full_path.exists():
-            return jsonify({'error': 'Image not found'}), 404
-        
-        # Get directory and filename
-        directory = full_path.parent
-        filename = full_path.name
-        
-        return send_from_directory(directory, filename, as_attachment=False)
+        # Fallback to local storage
+        else:
+            # Build full path
+            full_path = PHOTOS_BASE_DIR / image_path
+            
+            # Security check - ensure path is within photos directory
+            if not str(full_path.resolve()).startswith(str(PHOTOS_BASE_DIR.resolve())):
+                return jsonify({'error': 'Access denied'}), 403
+            
+            # Check if file exists
+            if not full_path.exists():
+                return jsonify({'error': 'Image not found'}), 404
+            
+            # Get directory and filename
+            directory = full_path.parent
+            filename = full_path.name
+            
+            return send_from_directory(directory, filename, as_attachment=False)
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500

@@ -1,6 +1,5 @@
 FROM python:3.11-slim
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y \
     libgl1 \
     libglib2.0-0 \
@@ -11,15 +10,10 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application files
 COPY . .
 
-EXPOSE 8000
-
-# Simple fixed port - Railway will handle routing
-CMD ["gunicorn", "api:app", "--bind", "0.0.0.0:8000", "--timeout", "120", "--workers", "1"]
+CMD ["gunicorn", "api:app", "--bind", "0.0.0.0:10000", "--timeout", "120", "--workers", "1"]
 

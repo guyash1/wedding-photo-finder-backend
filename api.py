@@ -16,6 +16,7 @@ import zipfile
 import io
 import boto3
 from botocore.exceptions import ClientError
+import gc  # Garbage collector for memory cleanup
 
 app = Flask(__name__)
 CORS(app, origins=['*'])
@@ -83,15 +84,11 @@ def load_database():
         print(f"❌ Error loading embeddings file: {e}")
         return False
 
-# Load database on startup (for gunicorn)
+# Startup message (database will load on first request)
 print("=" * 60)
-print("🚀 Starting Face Recognition API")
+print("🚀 Starting Face Recognition API - Lazy Loading Mode")
 print("=" * 60)
-if not load_database():
-    print("⚠️ WARNING: Could not load face database on startup.")
-    print("⚠️ Make sure face_embeddings.pkl exists in R2 or locally.")
-else:
-    print("✅ Face database loaded successfully!")
+print("💡 Database will load on first search request to save memory")
 print("=" * 60)
 
 def cosine_similarity(embedding1, embedding2):
@@ -101,8 +98,22 @@ def cosine_similarity(embedding1, embedding2):
     
     return np.dot(embedding1, embedding2) / (np.linalg.norm(embedding1) * np.linalg.norm(embedding2))
 
+def ensure_database_loaded():
+    """Load database only when needed (lazy loading)"""
+    global face_database
+    
+    if face_database is None:
+        print("⏳ Loading database on demand...")
+        if not load_database():
+            raise Exception("Failed to load face database")
+    
+    return True
+
 def find_matching_photos(uploaded_embedding, threshold=0.6):
     """Find all photos where the person appears"""
+    # Ensure database is loaded
+    ensure_database_loaded()
+    
     matches = []
     
     for face_entry in face_database:
@@ -232,11 +243,18 @@ def search_faces():
                     'error': 'Very few matches found - please try a clearer photo or different angle'
                 }), 400
             
-            return jsonify({
+            result = jsonify({
                 'success': True,
                 'total_matches': len(matches),
                 'matches': matches  # Return all matches
             })
+            
+            # Clean up memory after search
+            del matches, uploaded_embedding, embeddings
+            gc.collect()  # Force garbage collection
+            print(f"🧹 Memory cleaned after search")
+            
+            return result
         
         finally:
             # Clean up temp file
@@ -244,6 +262,8 @@ def search_faces():
                 os.remove(temp_path)
     
     except Exception as e:
+        # Clean up memory on error too
+        gc.collect()
         return jsonify({
             'error': str(e),
             'success': False

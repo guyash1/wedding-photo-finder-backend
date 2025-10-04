@@ -55,28 +55,44 @@ def load_database():
     """Load the face embeddings database from local disk or R2"""
     global face_database
 
-    if not EMBEDDINGS_FILE.exists() and r2_client:
-        # Try to download from R2 once
-        try:
-            print("Embeddings file not found locally. Trying to download from R2...")
-            obj = r2_client.get_object(Bucket=R2_BUCKET_NAME, Key='processed_data/face_embeddings.pkl')
-            data = obj['Body'].read()
-            EMBEDDINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-            with open(EMBEDDINGS_FILE, 'wb') as f:
-                f.write(data)
-            print("Downloaded embeddings from R2.")
-        except Exception as e:
-            print(f"Failed to fetch embeddings from R2: {e}")
-
+    # If local file doesn't exist, try R2
     if not EMBEDDINGS_FILE.exists():
-        print(f"ERROR: Embeddings file not found at {EMBEDDINGS_FILE}")
+        if r2_client:
+            try:
+                print("📥 Embeddings file not found locally. Downloading from R2...")
+                obj = r2_client.get_object(Bucket=R2_BUCKET_NAME, Key='processed_data/face_embeddings.pkl')
+                data = obj['Body'].read()
+                EMBEDDINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                with open(EMBEDDINGS_FILE, 'wb') as f:
+                    f.write(data)
+                print("✅ Downloaded embeddings from R2 successfully!")
+            except Exception as e:
+                print(f"❌ Failed to fetch embeddings from R2: {e}")
+                return False
+        else:
+            print(f"❌ ERROR: No R2 client and embeddings file not found at {EMBEDDINGS_FILE}")
+            return False
+
+    # Load the embeddings file
+    try:
+        with open(EMBEDDINGS_FILE, 'rb') as f:
+            face_database = pickle.load(f)
+        print(f"✅ Loaded {len(face_database)} face embeddings from database")
+        return True
+    except Exception as e:
+        print(f"❌ Error loading embeddings file: {e}")
         return False
 
-    with open(EMBEDDINGS_FILE, 'rb') as f:
-        face_database = pickle.load(f)
-
-    print(f"Loaded {len(face_database)} face embeddings from database")
-    return True
+# Load database on startup (for gunicorn)
+print("=" * 60)
+print("🚀 Starting Face Recognition API")
+print("=" * 60)
+if not load_database():
+    print("⚠️ WARNING: Could not load face database on startup.")
+    print("⚠️ Make sure face_embeddings.pkl exists in R2 or locally.")
+else:
+    print("✅ Face database loaded successfully!")
+print("=" * 60)
 
 def cosine_similarity(embedding1, embedding2):
     """Calculate cosine similarity between two embeddings"""

@@ -159,22 +159,18 @@ def search_faces():
             image_file.save(tmp_file.name)
             temp_path = tmp_file.name
         
-        # Preprocess image for better face detection
+        # Minimal preprocessing - only resize extremely large images
         img = cv2.imread(temp_path)
         if img is not None:
-            # Resize if too large (helps with detection)
+            # Only resize if EXTREMELY large (to save memory)
             height, width = img.shape[:2]
-            if height > 1920 or width > 1920:
-                scale = 1920 / max(height, width)
+            if height > 4000 or width > 4000:
+                scale = 4000 / max(height, width)
                 new_width = int(width * scale)
                 new_height = int(height * scale)
-                img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
-            
-            # Enhance image quality
-            img = cv2.convertScaleAbs(img, alpha=1.1, beta=10)  # Slight brightness/contrast boost
-            
-            # Save preprocessed image
-            cv2.imwrite(temp_path, img)
+                img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
+                # Save only if resized
+                cv2.imwrite(temp_path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
         
         try:
             # Extract embedding from uploaded image

@@ -159,57 +159,54 @@ def search_faces():
             image_file.save(tmp_file.name)
             temp_path = tmp_file.name
         
-        # Minimal preprocessing - only resize extremely large images
+        # Preprocess image for better face detection
         img = cv2.imread(temp_path)
         if img is not None:
-            # Only resize if EXTREMELY large (to save memory)
+            # Resize if too large (helps with detection)
             height, width = img.shape[:2]
-            if height > 4000 or width > 4000:
-                scale = 4000 / max(height, width)
+            if height > 1920 or width > 1920:
+                scale = 1920 / max(height, width)
                 new_width = int(width * scale)
                 new_height = int(height * scale)
-                img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_LANCZOS4)
-                # Save only if resized
-                cv2.imwrite(temp_path, img, [cv2.IMWRITE_JPEG_QUALITY, 95])
+                img = cv2.resize(img, (new_width, new_height), interpolation=cv2.INTER_AREA)
+            
+            # Enhance image quality
+            img = cv2.convertScaleAbs(img, alpha=1.1, beta=10)  # Slight brightness/contrast boost
+            
+            # Save preprocessed image
+            cv2.imwrite(temp_path, img)
         
         try:
             # Extract embedding from uploaded image
-            # Try multiple detection methods for better compatibility
+            # Try multiple detection methods - ENFORCE detection to avoid false positives!
             embeddings = None
             
-            # Try with different detectors
-            detectors = ["opencv", "mtcnn", "retinaface"]
+            # Try with different detectors - all with enforce_detection=True
+            detectors = ["retinaface", "mtcnn", "opencv"]
             
             for detector in detectors:
                 try:
                     embeddings = DeepFace.represent(
                         img_path=temp_path,
                         model_name="Facenet",
-                        enforce_detection=False,  # More lenient
+                        enforce_detection=True,  # STRICT - only detect real faces!
                         detector_backend=detector
                     )
-                    if embeddings:
-                        print(f"Successfully detected face using {detector}")
-                        break
+                    if embeddings and len(embeddings) > 0:
+                        print(f"✅ Successfully detected face using {detector}")
+                        # Verify face was actually detected with confidence
+                        if 'face_confidence' in embeddings[0] or 'facial_area' in embeddings[0]:
+                            break
                 except Exception as e:
-                    print(f"Failed with {detector}: {e}")
+                    print(f"⚠️ Failed with {detector}: {str(e)[:100]}")
                     continue
             
-            # If still no face detected, try with different model
-            if not embeddings:
-                try:
-                    embeddings = DeepFace.represent(
-                        img_path=temp_path,
-                        model_name="VGG-Face",  # Alternative model
-                        enforce_detection=False,
-                        detector_backend="opencv"
-                    )
-                    print("Successfully detected face using VGG-Face model")
-                except Exception as e:
-                    print(f"Failed with VGG-Face: {e}")
-            
-            if not embeddings:
-                return jsonify({'error': 'No face detected in uploaded image'}), 400
+            # If no face detected with strict mode, return error immediately
+            if not embeddings or len(embeddings) == 0:
+                return jsonify({
+                    'error': 'No face detected in uploaded image',
+                    'success': False
+                }), 400
             
             # Use the first detected face
             uploaded_embedding = embeddings[0]['embedding']
